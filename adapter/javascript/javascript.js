@@ -1,10 +1,11 @@
 var vm =        require('vm');
+var fs =        require('fs');
+var cp =        require('child_process');
+
 var scheduler = require('node-schedule');
 var suncalc =   require('suncalc');
 var request =   require('request');
-var fs =        require('fs');
 var wol =       require('wake_on_lan');
-var cp =        require('child_process');
 
 var adapter =   require(__dirname + '/../../lib/adapter.js')({
 
@@ -40,47 +41,49 @@ var adapter =   require(__dirname + '/../../lib/adapter.js')({
             if (objects[channelId]) {
                 channelName = objects[channelId].common ? objects[channelId].common.name : null;
                 if (objects[channelId].parent) {
-                    deviceId = objects[channelId].parent;
-                    deviceName = objects[deviceId].common ? objects[deviceId].common.name : null;
+                    deviceId = objects[channelId] ? objects[channelId].parent : null;
+                    deviceName = objects[channelId] && objects[deviceId].common ? objects[deviceId].common.name : null;
                 }
             }
         }
 
-        // TODO find enum memberships
+        getObjectEnums(id, function (enumIds, enumNames) {
+            var eventObj = {
+                id:             id,
+                name:           name,
+                common:         common,
+                native:         native,
+                channelId:      channelId,
+                channelName:    channelName,
+                deviceId:       deviceId,
+                deviceName:     deviceName,
+                enumIds:        enumIds,       // Array of Strings
+                enumNames:      enumNames,       // Array of Strings
+                newState: {
+                    val:        state.val,
+                    ts:         state.ts,
+                    ack:        state.ack,
+                    lc:         state.lc,
+                    from:       state.from
+                },
+                oldState: {
+                    val:        oldState.val,
+                    ts:         oldState.ts,
+                    ack:        oldState.ack,
+                    lc:         oldState.lc,
+                    from:       oldState.from
+                }
 
-        var eventObj = {
-            id:             id,
-            name:           name,
-            common:         common,
-            native:         native,
-            channelId:      channelId,
-            channelName:    channelName,
-            deviceId:       deviceId,
-            deviceName:     deviceName,
-            enumIds:        null,       // Array of Strings
-            enumNames:      null,       // Array of Strings
-            newState: {
-                val:        state.val,
-                ts:         state.ts,
-                ack:        state.ack,
-                lc:         state.lc,
-                from:       state.from
-            },
-            oldState: {
-                val:        oldState.val,
-                ts:         oldState.ts,
-                ack:        oldState.ack,
-                lc:         oldState.lc,
-                from:       oldState.from
+            };
+
+            for (var i = 0, l = subscriptions.length; i < l; i++) {
+                if (patternMatching(eventObj, subscriptions[i].pattern)) {
+                    subscriptions[i].callback(eventObj);
+                }
             }
+        });
 
-        };
 
-        for (var i = 0, l = subscriptions.length; i < l; i++) {
-            if (patternMatching(eventObj, subscriptions[i].pattern)) {
-                subscriptions[i].callback(eventObj);
-            }
-        }
 
     },
 
@@ -105,10 +108,12 @@ var adapter =   require(__dirname + '/../../lib/adapter.js')({
 
 });
 
-var objects =       {};
-var states =        {};
-var scripts =       {};
-var subscriptions = [];
+var objects =           {};
+var states =            {};
+var scripts =           {};
+var subscriptions =     [];
+var enums =             [];
+var cacheObjectEnums =  {};
 
 function compile(source, name) {
     source += "\n;\nlog('registered ' + engine.subscriptions + ' subscription' + (engine.subscriptions === 1 ? '' : 's' ) + ' and ' + engine.schedules + ' schedule' + (engine.schedules === 1 ? '' : 's' ));\n";
@@ -136,11 +141,14 @@ function execute(script, name) {
         exec: function (cmd, callback) {
             return cp.exec(cmd, callback);
         },
-        email: function () {
-
+        email: function (msg) {
+            that.sendTo("email", msg);
         },
-        pushover: function () {
-
+        pushover: function (msg) {
+            that.sendTo('pushover', msg);
+        },
+        sendTo: function (adapter, command, message, callback) {
+            adapter.sendTo(adapter, command, message, callback);
         },
         subscribe: function (pattern, callbackOrId, value) {
 
@@ -148,11 +156,11 @@ function execute(script, name) {
 
             sandbox.engine.subscriptions += 1;
 
-            if (typeof pattern != "object") {
-                pattern = {id: pattern, change: "ne"};
+            if (typeof pattern !== 'object') {
+                pattern = {id: pattern, change: 'ne'};
             }
 
-            if (typeof callbackOrId === "function") {
+            if (typeof callbackOrId === 'function') {
                 callback = callbackOrId;
             } else {
                 var that = this;
@@ -173,6 +181,7 @@ function execute(script, name) {
             });
 
         },
+        to: this.sendTo,
         on: this.subscribe,
         schedule: function (pattern, callback) {
 
@@ -259,7 +268,7 @@ function execute(script, name) {
 function load(name) {
 
     adapter.getForeignObject(name, function (err, obj) {
-        if (!err && obj.common.enabled && obj.common.engine === adapter.namespace && obj.common.source && obj.common.platform.match(/[jJ]avascript/)) {
+        if (!err && obj.common.enabled && obj.common.engine === 'system.adapter.' + adapter.namespace && obj.common.source && obj.common.platform.match(/[jJ]avascript/)) {
             scripts[name] = compile(obj.common.source, name);
             if (scripts[name]) execute(scripts[name], name);
         }
@@ -268,6 +277,9 @@ function load(name) {
 }
 
 function patternMatching(event, pattern) {
+
+
+
     if (!pattern.logic) {
         pattern.logic = "and";
     }
@@ -275,11 +287,41 @@ function patternMatching(event, pattern) {
     var matched = false;
 
     // state id matching
-    if (pattern.id && pattern.id === event.id) {
-        if (pattern.logic == "or") return true;
-        matched = true;
-    } else if (pattern.id) {
-        if (pattern.logic == "and") return false;
+    if (pattern.id) {
+        if (pattern.id instanceof RegExp) {
+            if (event.id && event.id.match(pattern.id)) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        } else {
+            if (event.id && pattern.id === event.id) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        }
+    }
+
+    // state name matching
+    if (pattern.name) {
+        if (pattern.name instanceof RegExp) {
+            if (event.common.name && event.common.name.match(pattern.id)) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        } else {
+            if (event.common.name && pattern.name === event.common.name) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        }
     }
 
     // change matching
@@ -542,21 +584,163 @@ function patternMatching(event, pattern) {
     }
 
     // newState.from matching
+    if (pattern.from && pattern.from === event.newState.from) {
+        if (pattern.logic == "or") return true;
+        matched = true;
+    } else if (pattern.from) {
+        if (pattern.logic == "and") return false;
+    }
+
+    if (pattern.fromNe && pattern.fromNe !== event.newState.from) {
+        if (pattern.logic == "or") return true;
+        matched = true;
+    } else if (pattern.fromNe) {
+        if (pattern.logic == "and") return false;
+    }
 
     // oldState.from matching
+    if (pattern.oldFrom && pattern.oldFrom === event.oldState.from) {
+        if (pattern.logic == "or") return true;
+        matched = true;
+    } else if (pattern.oldFrom) {
+        if (pattern.logic == "and") return false;
+    }
+
+    if (pattern.oldFromNe && pattern.oldFromNe !== event.oldState.from) {
+        if (pattern.logic == "or") return true;
+        matched = true;
+    } else if (pattern.oldFromNe) {
+        if (pattern.logic == "and") return false;
+    }
 
     // channelId matching
+    if (pattern.channelId) {
+        if (pattern.channelId instanceof RegExp) {
+            if (event.channelId && event.channelId.match(pattern.channelId)) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        } else {
+            if (event.channelId && pattern.channelId === event.channelId) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        }
+    }
 
     // channelName matching
+    if (pattern.channelName) {
+        if (pattern.channelName instanceof RegExp) {
+            if (event.channelName && event.channelName.match(pattern.channelName)) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        } else {
+            if (event.channelName && pattern.channelName === event.channelName) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        }
+    }
 
     // deviceId matching
+    if (pattern.deviceId) {
+        if (pattern.deviceId instanceof RegExp) {
+            if (event.deviceId && event.deviceId.match(pattern.deviceId)) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        } else {
+            if (event.deviceId && pattern.deviceId === event.deviceId) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        }
+    }
 
     // deviceName matching
+    if (pattern.deviceName) {
+        if (pattern.deviceName instanceof RegExp) {
+            if (event.deviceName && event.deviceName.match(pattern.deviceName)) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        } else {
+            if (event.deviceName && pattern.deviceName === event.deviceName) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        }
+    }
+    var subMatched;
 
     // enumIds matching
+    if (pattern.enumId) {
+        if (pattern.enumId instanceof RegExp) {
+            subMatched = false;
+            for (var i = 0; i < event.enumIds.length; i++) {
+                if (event.enumIds[i].match(pattern.enumId)) {
+                    subMatched = true;
+                    break;
+                }
+            }
+            if (subMatched) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        } else {
+            if (event.enumIds && event.enumIds.indexOf(pattern.enumId) !== -1) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        }
+    }
 
     // enumNames matching
-
+    if (pattern.enumName) {
+        if (pattern.enumName instanceof RegExp) {
+            subMatched = false;
+            for (var j = 0; j < event.enumNames.length; j++) {
+                if (event.enumNames[j].match(pattern.enumName)) {
+                    subMatched = true;
+                    break;
+                }
+            }
+            if (subMatched) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        } else {
+            if (event.enumNames && event.enumNames.indexOf(pattern.enumName) !== -1) {
+                if (pattern.logic === "or") return true;
+                matched = true;
+            } else {
+                if (pattern.logic === "and") return false;
+            }
+        }
+    }
 
 
     return matched;
@@ -580,9 +764,49 @@ function getData(callback) {
         objects = {};
         for (var i = 0; i < res.length; i++) {
             objects[res[i].doc._id] = res[i].doc;
+            if (res[i].doc.type === 'enum') enums.push(res[i].doc._id);
         }
+
         objectsReady = true;
         adapter.log.info('received all objects');
         if (statesReady && typeof callback === 'function') callback();
     });
 }
+
+
+function isMember(idObj, idEnum) {
+
+}
+
+function isMemberRecursive(idObj, idEnum) {
+
+}
+
+function getObjectEnums(idObj, callback, enumIds, enumNames) {
+    if (cacheObjectEnums[idObj]) {
+        if (typeof callback === 'function') callback(cacheObjectEnums[idObj].enumIds, cacheObjectEnums[idObj].enumNames);
+        return;
+    }
+    if (!enumIds) {
+        enumIds = [];
+        enumNames = [];
+    }
+    for (var i = 0, l = enums.length; i < l; i++) {
+        if (objects[enums[i]] && objects[enums[i]].common && objects[enums[i]].common.members && objects[enums[i]].common.members.indexOf(idObj) !== -1) {
+            enumIds.push(enums[i]);
+            enumNames.push(objects[enums[i]].common.name);
+        }
+    }
+    if (objects[idObj].parent) {
+        getObjectEnums(objects[idObj].parent, callback, enumIds, enumNames);
+    } else {
+        cacheObjectEnums[idObj] = {enumIds: enumIds, enumNames: enumNames};
+        if (typeof callback === 'function') callback(enumIds, enumNames);
+    }
+}
+
+function getObjectEnumsRecursive(idObj, callback, enumIds, enumNames) {
+
+}
+
+
