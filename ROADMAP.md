@@ -3,15 +3,11 @@
 * (hobbyquaker) adapter history: target couchdb and file
 * (hobbyquaker) admin-ui: states: show history data
 * (hobbyquaker) admin-ui: objects: add, edit, delete
-* (hobbyquaker) admin-ui: enums: add, edit, delete, move, assign and remove members
+* (hobbyquaker) admin-ui: enums: add, edit, delete, move, assign and remove members (Finished?)
 * (hobbyquaker) adapter legacy
-* (bluefox) ioBroker.build.
-* (bluefox) Windows installation package.
-* (bluefox) Debian installation package.
+* (bluefox) adapter package
 * io-package.json - pre/post install hooks
-* admin-ui: adapter instance: add/edit/delete
-
-
+* (bluefox) adapter dependencies check
 
 # 0.2.0
 
@@ -25,10 +21,11 @@
 * (hobbyquaker) files (Attachments) in CouchDB
 * (hobbyquaker) ctrl: Adapter start/stop via subscribe
 
+
 # 0.4.0
 
 * Beginn Portierung ioBroker.vis (DashUI), ioBroker.mobile (yahui), ScriptGUI, ...
-
+* Wizard: language, admin port and pass, web, and then select adapters to add (vis, mobile, JS, ...)
 
 
 # 0.5.0
