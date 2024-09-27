@@ -1,0 +1,14 @@
+{
+    "version": "7.0.0-alpha.0-20240926-91f9b082f",
+    "command": {
+        "run": {
+            "stream": true
+        },
+        "version": {
+            "allowBranch": ["master", "*.x"],
+            "ignoreChanges": ["*.md"],
+            "exact": true
+        }
+    },
+    "$schema": "node_modules/lerna/schemas/lerna-schema.json"
+}
